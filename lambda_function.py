@@ -3,8 +3,7 @@ import requests
 import base64
 import boto3
 import os
-
-counter = 0
+from datetime import datetime
 
 def save_locally(images_binary, local_file_path):
     with open(local_file_path, "wb") as image_file:
@@ -13,14 +12,14 @@ def save_locally(images_binary, local_file_path):
 def upload_to_s3(local_file_path, s3_bucket_name, s3_file_name):
     s3 = boto3.client('s3', region_name='ap-south-1')
     try:
-        s3.upload_file(local_file_path, s3_bucket_name, s3_file_name)
+        extra_args = {'ContentType': 'image/png'}
+        s3.upload_file(local_file_path, s3_bucket_name, s3_file_name, ExtraArgs=extra_args)
         return True
     except Exception as e:
         print(f"Failed to upload to S3: {e}")
         return False
 
 def lambda_handler(event, context):
-    global counter
     request_body = json.loads(event['body'])
     api_data = {
         "prompt": request_body.get("prompt", ""),
@@ -36,31 +35,30 @@ def lambda_handler(event, context):
         api_response_body = api_response.json()
         images_base64 = api_response_body['images'][0]
         images_binary = base64.b64decode(images_base64)
-        counter += 1
-        file_name = f"output_image-{counter:04d}.png"
+
+        timestamp_str = datetime.now().strftime("%Y%m%d%H%M%S")[:-3]
+        file_name = f"output_image-{timestamp_str}.png"
         local_file_path = f"/tmp/{file_name}"
+
         save_locally(images_binary, local_file_path)
+
         s3_bucket_name = "stable-png-images"
         s3_file_name = file_name
         upload_success = upload_to_s3(local_file_path, s3_bucket_name, s3_file_name)
 
         if upload_success:
-            response = {
+            s3_url = f"https://{s3_bucket_name}.s3.amazonaws.com/{s3_file_name}"
+            return {
                 "statusCode": 200,
-                "body": json.dumps({
-                    "original_request": request_body,
-                    "external_api_response": {"images": f"s3://{s3_bucket_name}/{s3_file_name}"}
-                })
+                "body": s3_url
             }
         else:
-            response = {
+            return {
                 "statusCode": 500,
                 "body": json.dumps({"error": "Failed to upload image to S3"})
             }
     else:
-        response = {
+        return {
             "statusCode": api_response.status_code,
             "body": json.dumps({"error": "External API request failed"})
         }
-
-    return response
